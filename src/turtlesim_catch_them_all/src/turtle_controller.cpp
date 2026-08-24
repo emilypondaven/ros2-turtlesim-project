@@ -1,6 +1,9 @@
 #include "rclcpp/rclcpp.hpp"
 #include "turtlesim/msg/pose.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "my_interfaces/msg/turtle.hpp"
+#include "my_interfaces/msg/turtle_array.hpp"
+
 #include <cmath>
 
 using namespace std::placeholders;
@@ -9,7 +12,7 @@ using namespace std::chrono_literals;
 class TurtleControllerNode : public rclcpp::Node
 {
 public:
-    TurtleControllerNode() : Node("turtle_controller"), target_x_(8.0), target_y_(4.0)
+    TurtleControllerNode() : Node("turtle_controller")
     {
         pose_subscriber_ = this->create_subscription<turtlesim::msg::Pose>(
             "/turtle1/pose", 10,
@@ -23,6 +26,11 @@ public:
         control_loop_timer_ = this->create_wall_timer(
             10ms, std::bind(&TurtleControllerNode::control_loop, this)
         );
+
+        alive_turtles_subscriber_ = this->create_subscription<my_interfaces::msg::TurtleArray>(
+            "alive_turtles", 10,
+            std::bind(&TurtleControllerNode::callbackAliveTurtles, this, _1)
+        );
     }
  
 private:
@@ -33,12 +41,12 @@ private:
 
     void control_loop() 
     {
-        if (!pose_) {
+        if (!pose_ || !turtle_to_catch_) {
             return;
         }
 
-        double dist_x = target_x_ - pose_->x;
-        double dist_y = target_y_ - pose_->y;
+        double dist_x = turtle_to_catch_->x - pose_->x;
+        double dist_y = turtle_to_catch_->y - pose_->y;
         double distance = std::sqrt(dist_x * dist_x + dist_y * dist_y);
 
         auto cmd = geometry_msgs::msg::Twist();
@@ -67,11 +75,19 @@ private:
         cmd_vel_publisher_->publish(cmd);
     }
 
-    double target_x_;
-    double target_y_;
+    void callbackAliveTurtles(const my_interfaces::msg::TurtleArray::SharedPtr msg)
+    {
+        if (!msg->turtles.empty()) {
+            turtle_to_catch_ = std::make_shared<my_interfaces::msg::Turtle>(msg->turtles[0]);
+        }
+    }
+
     turtlesim::msg::Pose::SharedPtr pose_;
+    my_interfaces::msg::Turtle::SharedPtr turtle_to_catch_;
+
     rclcpp::Subscription<turtlesim::msg::Pose>::SharedPtr pose_subscriber_;
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_publisher_;
+    rclcpp::Subscription<my_interfaces::msg::TurtleArray>::SharedPtr alive_turtles_subscriber_;
     rclcpp::TimerBase::SharedPtr control_loop_timer_;
 };
  
