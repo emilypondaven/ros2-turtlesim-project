@@ -1,7 +1,9 @@
 #include "rclcpp/rclcpp.hpp"
 #include "turtlesim/srv/spawn.hpp"
+#include "turtlesim/srv/kill.hpp"
 #include "my_interfaces/msg/turtle.hpp"
 #include "my_interfaces/msg/turtle_array.hpp"
+#include "my_interfaces/srv/catch_turtle.hpp"
 
 #include <string>
 #include <cstdlib>
@@ -14,18 +16,45 @@ using namespace std::placeholders;
 class TurtleSpawnerNode : public rclcpp::Node
 {
 public:
-    TurtleSpawnerNode() : Node("turtle_spawner"), turtle_name_prefix_("turtle"), turtle_counter_(2), alive_turtles_({})
+    TurtleSpawnerNode() : Node("turtle_spawner"), turtle_counter_(2), alive_turtles_({})
     {
+        this->declare_parameter("turtle_name_prefix", "turtle");
+        this->declare_parameter("spawn_frequency", 1.0);
+        turtle_name_prefix_ = this->get_parameter("turtle_name_prefix").as_string();
+        spawn_frequency_ = this->get_parameter("spawn_frequency").as_double();
+
         alive_turtles_pub_ = this->create_publisher<my_interfaces::msg::TurtleArray>(
             "alive_turtles", 10
         );
+
         spawn_client_ = this->create_client<turtlesim::srv::Spawn>(
             "/spawn"
         );
-        timer_ = this->create_wall_timer(2s, std::bind(&TurtleSpawnerNode::spawnNewTurtle, this));
+
+        kill_client_ = this->create_client<turtlesim::srv::Kill>(
+            "/kill"
+        );
+
+        catch_turtle_service_ = this->create_service<my_interfaces::srv::CatchTurtle>(
+            "catch_turtle",
+            std::bind(&TurtleSpawnerNode::callbackCatchTurtle, this, _1, _2)
+        );
+
+        // New turtle spawns every 2 seconds
+        timer_ = this->create_wall_timer(
+            std::chrono::duration<double>(spawn_frequency_),
+            std::bind(&TurtleSpawnerNode::spawnNewTurtle, this));
     }
 
 private:
+    void callbackCatchTurtle(const my_interfaces::srv::CatchTurtle::Request::SharedPtr request,
+                            const my_interfaces::srv::CatchTurtle::Response::SharedPtr response)
+    {
+        callKillService(request->name);
+        response->success = true;
+        // RETURN THE RESPONSE
+    }
+
     void publishAliveTurtles()
     {
         auto msg = my_interfaces::msg::TurtleArray();
@@ -95,12 +124,47 @@ private:
         return dist(gen);
     }
 
-    const std::string turtle_name_prefix_;
+    void callKillService(const std::string &turtle_name)
+    {
+        while (!kill_client_->wait_for_service(1s))
+        {
+            RCLCPP_WARN(this->get_logger(), "Waiting for kill service...");
+        }
+
+        auto request = std::make_shared<turtlesim::srv::Kill::Request>();
+        request->name = turtle_name;
+
+        // Use of lambda function
+        kill_client_->async_send_request(
+            request,
+            [this, request](rclcpp::Client<turtlesim::srv::Kill>::SharedFuture future) {
+                callbackCallKillService(future, request);
+            });
+    }
+
+    void callbackCallKillService(
+        rclcpp::Client<turtlesim::srv::Kill>::SharedFuture future,
+        turtlesim::srv::Kill::Request::SharedPtr request)
+    {
+        // Remove killed turtle from list
+        for (size_t i = 0; i < alive_turtles_.size(); i++) {
+            if (request->name == alive_turtles_[i].name) {
+                alive_turtles_.erase(alive_turtles_.begin() + i);
+                publishAliveTurtles();
+                break;
+            }
+        }
+    }
+
+    double spawn_frequency_;
+    std::string turtle_name_prefix_;
     int turtle_counter_;
     std::vector<my_interfaces::msg::Turtle> alive_turtles_;
 
     rclcpp::Publisher<my_interfaces::msg::TurtleArray>::SharedPtr alive_turtles_pub_;
     rclcpp::Client<turtlesim::srv::Spawn>::SharedPtr spawn_client_;
+    rclcpp::Client<turtlesim::srv::Kill>::SharedPtr kill_client_;
+    rclcpp::Service<my_interfaces::srv::CatchTurtle>::SharedPtr catch_turtle_service_;
     rclcpp::TimerBase::SharedPtr timer_;
 };
  
